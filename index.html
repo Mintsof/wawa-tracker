@@ -149,7 +149,7 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 .lim-row .amount-wrap .cur{font-size:13px;right:12px}
 .check{display:flex;gap:10px;align-items:flex-start;font-size:13px;color:var(--ink2);margin-top:6px}
 .check input{width:18px;height:18px;accent-color:var(--ink);margin-top:1px}
-.set-cat{display:grid;grid-template-columns:1fr 74px 96px 34px;gap:6px;margin-bottom:8px;align-items:center}
+.set-cat{display:grid;grid-template-columns:1fr 120px 34px;gap:6px;margin-bottom:8px;align-items:center}
 .set-cat .inp{height:42px;padding:0 10px;font-size:14px}
 .set-cat select.inp{padding:0 8px}
 .hr{height:1px;background:var(--line);margin:20px 0}
@@ -158,6 +158,14 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .toast{position:fixed;left:50%;top:calc(16px + env(safe-area-inset-top));transform:translate(-50%,-120px);background:var(--ink);color:#fff;padding:10px 16px;border-radius:99px;font-size:13px;transition:transform .25s;z-index:30;visibility:hidden}
 .toast.on{transform:translate(-50%,0);visibility:visible}
+.seg{display:inline-flex;padding:3px;border-radius:99px;background:rgba(255,255,255,.6);border:1px solid rgba(0,0,0,.06)}
+.seg button{padding:5px 12px;border-radius:99px;font-size:13px;color:var(--muted);font-weight:500}
+.seg button.on{background:var(--ink);color:#fff}
+.hero-top{display:flex;justify-content:space-between;align-items:center;position:relative;z-index:2}
+.amount-wrap .seg{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:#fff}
+.amount-wrap.with-seg .inp{padding-right:110px}
+.hint{font-size:12px;color:var(--muted);margin-top:6px;min-height:16px}
+.row .info span.orig{font-family:var(--mono)}
 </style>
 </head>
 <body>
@@ -200,23 +208,54 @@ const MONTHS = ['январь','февраль','март','апрель','ма�
 const MONTHS_GEN = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
 const MONTHS_SHORT = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
 const WEEKDAYS = ['воскресенье','понедельник','вторник','среда','четверг','пятница','суббота'];
-const CURR = {PLN:'zł', EUR:'€'};
+const SYM = {PLN:'zł', EUR:'€'};
+const DEFAULT_RATE = 4.25;
 
+/* Все суммы хранятся в злотых. Евро — только для ввода и отображения. */
 const defaults = () => ({
+  v: 2,
   categories: [
-    {id:'rent',  name:'Аренда жилья',     currency:'PLN', defLimit:1600},
-    {id:'food',  name:'Еда',              currency:'EUR', defLimit:150},
-    {id:'daily', name:'Текущие расходы',  currency:'EUR', defLimit:200}
+    {id:'rent',  name:'Аренда жилья',    defLimit:1600},
+    {id:'food',  name:'Еда',             defLimit:round2(150 * DEFAULT_RATE)},
+    {id:'daily', name:'Текущие расходы', defLimit:round2(200 * DEFAULT_RATE)}
   ],
-  rate: 4.25,          // сколько злотых в 1 евро
-  main: 'EUR',         // валюта общей сводки
-  months: {},          // 'YYYY-MM' -> {limits:{catId:amount}}
-  expenses: []         // {id,date:'YYYY-MM-DD',cat,amount,note}
+  rate: DEFAULT_RATE,     // 1 € = rate zł
+  rateAuto: true,         // обновлять курс НБП раз в день
+  rateDate: null,
+  display: 'PLN',         // в какой валюте показывать
+  months: {},             // 'YYYY-MM' -> {limits:{catId: zł}}
+  expenses: []            // {id,date,cat,amount(zł),orig:{amount,cur}}
 });
 
+function round2(n){ return Math.round(n*100)/100; }
+
+// перевод данных из первой версии (категории в разных валютах)
+function migrate(s){
+  if (!s || typeof s !== 'object') return defaults();
+  if (s.v === 2) return Object.assign(defaults(), s);
+  const rate = s.rate > 0 ? s.rate : DEFAULT_RATE;
+  const curOf = {};
+  (s.categories || []).forEach(c => curOf[c.id] = c.currency || 'PLN');
+  const toPLN = (a, cur) => cur === 'EUR' ? round2(a * rate) : a;
+  const out = defaults();
+  out.rate = rate;
+  out.categories = (s.categories || []).map(c => ({id:c.id, name:c.name, defLimit: toPLN(+c.defLimit || 0, curOf[c.id])}));
+  Object.entries(s.months || {}).forEach(([k, m]) => {
+    const l = {};
+    Object.entries(m.limits || {}).forEach(([id, a]) => l[id] = toPLN(+a || 0, curOf[id] || 'EUR'));
+    out.months[k] = {limits: l};
+  });
+  out.expenses = (s.expenses || []).map(e => {
+    const cur = curOf[e.cat] || 'EUR';
+    return {id:e.id, date:e.date, cat:e.cat, note:e.note || '', amount: toPLN(e.amount, cur), orig:{amount:e.amount, cur}};
+  });
+  return out;
+}
+
 let state;
-try { state = JSON.parse(localStorage.getItem(KEY)) || defaults(); } catch(e) { state = defaults(); }
+try { state = migrate(JSON.parse(localStorage.getItem(KEY))); } catch(e) { state = defaults(); }
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch(e) { toast('Не удалось сохранить'); } };
+save();
 
 /* helpers */
 const $ = s => document.querySelector(s);
@@ -227,23 +266,20 @@ const daysIn = (y,m) => new Date(y, m+1, 0).getDate();
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const parseNum = v => { const n = parseFloat(String(v).replace(/\s/g,'').replace(',','.')); return isFinite(n) ? n : NaN; };
-const round2 = n => Math.round(n*100)/100;
-function fmt(n, cur, short){
-  const v = Math.abs(n) < 0.005 ? 0 : n;
-  const s = new Intl.NumberFormat('ru-RU', {minimumFractionDigits:0, maximumFractionDigits: short ? 0 : 2}).format(v);
-  return cur === 'EUR' ? `${s} €` : `${s} zł`;
-}
-function conv(amount, from, to){
-  if (from === to) return amount;
-  const r = state.rate > 0 ? state.rate : 4.25;
-  return from === 'EUR' ? amount * r : amount / r;
-}
-const catById = id => state.categories.find(c => c.id === id) || {id, name:'Удалённая категория', currency:'EUR', defLimit:0};
+const rate = () => state.rate > 0 ? state.rate : DEFAULT_RATE;
+const toCur = (pln, cur) => cur === 'EUR' ? pln / rate() : pln;       // zł -> валюта
+const fromCur = (amt, cur) => cur === 'EUR' ? amt * rate() : amt;     // валюта -> zł
+const numStr = (n, short) => new Intl.NumberFormat('ru-RU', {minimumFractionDigits:0, maximumFractionDigits: short ? 0 : 2}).format(Math.abs(n) < 0.005 ? 0 : n);
+const fmtCur = (amt, cur, short) => `${numStr(amt, short)} ${SYM[cur]}`;
+const fmt = (pln, short) => fmtCur(toCur(pln, state.display), state.display, short);   // сумма в злотых -> в валюте отображения
+const inputVal = n => String(round2(n)).replace('.', ',');
+const catById = id => state.categories.find(c => c.id === id) || {id, name:'Удалённая категория', defLimit:0};
 const catColor = id => { const i = state.categories.findIndex(c => c.id === id); return COLORS[(i < 0 ? 7 : i) % COLORS.length]; };
 
 /* view state */
 const today = new Date();
 const todayStr = ymd(today);
+const curKey = mkey(today.getFullYear(), today.getMonth());
 let vy = today.getFullYear(), vm = today.getMonth();
 let selected = todayStr;
 
@@ -253,24 +289,20 @@ function limitsFor(key){
   state.categories.forEach(c => out[c.id] = stored[c.id] ?? c.defLimit);
   return out;
 }
-// фиксируем лимиты текущего и прошедших месяцев, чтобы смена "по умолчанию" их не трогала
+// фиксируем лимиты текущего и прошедших месяцев
 function freezeIfNeeded(key){
-  if (key <= mkey(today.getFullYear(), today.getMonth()) && !state.months[key]) {
-    state.months[key] = {limits: limitsFor(key)};
-    save();
-  }
+  if (key <= curKey && !state.months[key]) { state.months[key] = {limits: limitsFor(key)}; save(); }
 }
 const monthExpenses = key => state.expenses.filter(e => e.date.startsWith(key + '-'));
 
 function daysLeftInfo(){
-  const dim = daysIn(vy, vm);
-  const curKey = mkey(today.getFullYear(), today.getMonth());
-  const key = mkey(vy, vm);
+  const dim = daysIn(vy, vm), key = mkey(vy, vm);
   if (key === curKey) return {dim, left: dim - today.getDate() + 1, state:'current'};
   if (key > curKey) return {dim, left: dim, state:'future'};
   return {dim, left: 0, state:'past'};
 }
 const plural = (n, a, b, c) => { const m10 = n%10, m100 = n%100; return (m10===1 && m100!==11) ? a : (m10>=2 && m10<=4 && (m100<12 || m100>14)) ? b : c; };
+const dayWord = n => plural(n,'день','дня','дней');
 
 /* render */
 function render(){
@@ -278,9 +310,8 @@ function render(){
   freezeIfNeeded(key);
   const info = daysLeftInfo();
   $('#mTitle').textContent = `${MONTHS[vm]} ${vy}`;
-  $('#mSub').textContent = info.state === 'current'
-    ? `${info.dim} ${plural(info.dim,'день','дня','дней')} · осталось ${info.left} ${plural(info.left,'день','дня','дней')}`
-    : info.state === 'future' ? `${info.dim} ${plural(info.dim,'день','дня','дней')} · впереди` : `${info.dim} ${plural(info.dim,'день','дня','дней')} · завершён`;
+  $('#mSub').textContent = info.state === 'current' ? `${info.dim} ${dayWord(info.dim)} · осталось ${info.left} ${dayWord(info.left)}`
+    : `${info.dim} ${dayWord(info.dim)} · ${info.state === 'future' ? 'впереди' : 'завершён'}`;
   renderHero(key, info); renderCats(key, info); renderCal(key); renderDay(); renderYear();
 }
 
@@ -292,23 +323,23 @@ function spentByCat(key){
 }
 
 function renderHero(key, info){
-  const lim = limitsFor(key), sp = spentByCat(key), M = state.main;
-  let L = 0, S = 0;
-  state.categories.forEach(c => { L += conv(lim[c.id], c.currency, M); S += conv(sp[c.id] || 0, c.currency, M); });
-  Object.keys(sp).forEach(id => { if (!state.categories.find(c => c.id === id)) S += conv(sp[id], catById(id).currency, M); });
+  const lim = limitsFor(key), sp = spentByCat(key);
+  const L = state.categories.reduce((a,c) => a + (lim[c.id] || 0), 0);
+  const S = Object.values(sp).reduce((a,b) => a + b, 0);
   const left = L - S;
   const pct = L > 0 ? Math.min(100, S / L * 100) : 0;
   const perDay = info.left > 0 ? left / info.left : 0;
-  const todaySpent = state.expenses.filter(e => e.date === todayStr).reduce((a,e) => a + conv(e.amount, catById(e.cat).currency, M), 0);
+  const todaySpent = state.expenses.filter(e => e.date === todayStr).reduce((a,e) => a + e.amount, 0);
   $('#hero').innerHTML = `
-    <div class="label">Осталось на месяц</div>
-    <div class="big num" style="${left<0?'color:var(--over)':''}">${fmt(left, M)}</div>
-    <div class="sub">из ${fmt(L, M)} · потрачено ${fmt(S, M)}</div>
+    <div class="hero-top"><div class="label">Осталось на месяц</div>
+      <div class="seg" id="dispSeg"><button data-cur="PLN" class="${state.display==='PLN'?'on':''}">zł</button><button data-cur="EUR" class="${state.display==='EUR'?'on':''}">€</button></div></div>
+    <div class="big num" style="${left<0?'color:var(--over)':''}">${fmt(left)}</div>
+    <div class="sub">из ${fmt(L)} · потрачено ${fmt(S)}${state.display === 'EUR' ? ` · курс ${numStr(rate())}` : ''}</div>
     <div class="bar ${S > L ? 'over':''}"><i style="width:${pct}%"></i></div>
     <div class="hero-grid">
-      <div><b class="num">${info.left}</b><span>${plural(info.left,'день','дня','дней')} осталось</span></div>
-      <div><b class="num">${info.left > 0 ? fmt(perDay, M, true) : '—'}</b><span>можно в день</span></div>
-      <div><b class="num">${info.state === 'current' ? fmt(todaySpent, M, true) : Math.round(pct) + '%'}</b><span>${info.state === 'current' ? 'сегодня' : 'бюджета'}</span></div>
+      <div><b class="num">${info.left}</b><span>${dayWord(info.left)} осталось</span></div>
+      <div><b class="num">${info.left > 0 ? fmt(perDay, true) : '—'}</b><span>можно в день</span></div>
+      <div><b class="num">${info.state === 'current' ? fmt(todaySpent, true) : Math.round(pct) + '%'}</b><span>${info.state === 'current' ? 'сегодня' : 'бюджета'}</span></div>
     </div>`;
 }
 
@@ -317,25 +348,25 @@ function renderCats(key, info){
   $('#cats').innerHTML = state.categories.map(c => {
     const L = lim[c.id] || 0, S = sp[c.id] || 0, left = L - S;
     const pct = L > 0 ? Math.min(100, S / L * 100) : (S > 0 ? 100 : 0);
-    const per = info.left > 0 && left > 0 ? ` · ${fmt(left / info.left, c.currency, true)}/день` : '';
+    const per = info.left > 0 && left > 0 ? ` · ${fmt(left / info.left, true)}/день` : '';
     return `<div class="cat">
       <div class="cat-top">
         <div class="cat-name"><span class="dot" style="background:${catColor(c.id)}"></span>${esc(c.name)}</div>
-        <div class="cat-left num ${left < 0 ? 'over':''}">${fmt(left, c.currency)}</div>
+        <div class="cat-left num ${left < 0 ? 'over':''}">${fmt(left)}</div>
       </div>
-      <div class="cat-meta"><span class="num">${fmt(S, c.currency)} из ${fmt(L, c.currency)}</span><span>${left < 0 ? 'перерасход' : 'осталось' + per}</span></div>
+      <div class="cat-meta"><span class="num">${fmt(S)} из ${fmt(L)}</span><span>${left < 0 ? 'перерасход' : 'осталось' + per}</span></div>
       <div class="bar ${S > L ? 'over':''}"><i style="width:${pct}%"></i></div>
     </div>`;
   }).join('');
 }
 
 function renderCal(key){
-  const dim = daysIn(vy, vm), first = (new Date(vy, vm, 1).getDay() + 6) % 7, M = state.main;
+  const dim = daysIn(vy, vm), first = (new Date(vy, vm, 1).getDay() + 6) % 7;
   const byDay = {};
   monthExpenses(key).forEach(e => {
     const d = +e.date.slice(8,10);
     byDay[d] = byDay[d] || {sum:0, cats:new Set()};
-    byDay[d].sum += conv(e.amount, catById(e.cat).currency, M);
+    byDay[d].sum += e.amount;
     byDay[d].cats.add(e.cat);
   });
   const max = Math.max(1, ...Object.values(byDay).map(v => v.sum));
@@ -346,7 +377,7 @@ function renderCal(key){
     const cls = ['day', ds === todayStr ? 'today':'', ds === selected ? 'sel':'', ds < todayStr ? 'past':''].join(' ');
     const bg = v ? `background:rgba(24,24,27,${(0.04 + v.sum / max * 0.11).toFixed(3)})` : '';
     const dots = v ? [...v.cats].slice(0,4).map(c => `<i style="background:${catColor(c)}"></i>`).join('') : '';
-    h += `<button class="${cls}" data-d="${ds}" style="${bg}"><span class="d">${d}</span><span class="s">${v ? fmt(v.sum, M, true) : ''}</span><span class="dots">${dots}</span></button>`;
+    h += `<button class="${cls}" data-d="${ds}" style="${bg}"><span class="d">${d}</span><span class="s">${v ? fmt(v.sum, true) : ''}</span><span class="dots">${dots}</span></button>`;
   }
   $('#calGrid').innerHTML = h;
 }
@@ -360,35 +391,34 @@ function renderDay(){
   p.style.display = '';
   const d = new Date(selected + 'T12:00:00');
   const list = state.expenses.filter(e => e.date === selected);
-  const M = state.main;
-  const sum = list.reduce((a,e) => a + conv(e.amount, catById(e.cat).currency, M), 0);
+  const sum = list.reduce((a,e) => a + e.amount, 0);
   p.innerHTML = `
     <div class="panel-head">
-      <div><h3>${d.getDate()} ${MONTHS_GEN[d.getMonth()]}</h3><p>${WEEKDAYS[d.getDay()]}${list.length ? ' · ' + fmt(sum, M) : ''}</p></div>
+      <div><h3>${d.getDate()} ${MONTHS_GEN[d.getMonth()]}</h3><p>${WEEKDAYS[d.getDay()]}${list.length ? ' · ' + fmt(sum) : ''}</p></div>
       <button class="pill" data-add="${selected}">+ добавить</button>
     </div>
-    ${list.length ? list.map(e => { const c = catById(e.cat); return `
+    ${list.length ? list.map(e => {
+      const c = catById(e.cat);
+      const sub = [e.note ? esc(c.name) : '', e.orig && e.orig.cur !== state.display ? `<span class="orig">${fmtCur(e.orig.amount, e.orig.cur)}</span>` : ''].filter(Boolean).join(' · ');
+      return `
       <div class="row">
         <span class="dot" style="background:${catColor(e.cat)}"></span>
-        <div class="info"><b>${esc(e.note || c.name)}</b><span>${e.note ? esc(c.name) : ''}</span></div>
-        <div class="amt num">${fmt(e.amount, c.currency)}</div>
+        <div class="info"><b>${esc(e.note || c.name)}</b><span>${sub}</span></div>
+        <div class="amt num">${fmt(e.amount)}</div>
         <div class="acts"><button data-edit="${e.id}" aria-label="Изменить">${ICON_EDIT}</button><button data-del="${e.id}" aria-label="Удалить">${ICON_DEL}</button></div>
       </div>`; }).join('') : '<div class="empty">В этот день трат нет</div>'}`;
 }
 
 function renderYear(){
-  const M = state.main, sums = [];
-  for (let m = 0; m < 12; m++){
-    const key = mkey(vy, m);
-    sums.push(monthExpenses(key).reduce((a,e) => a + conv(e.amount, catById(e.cat).currency, M), 0));
-  }
+  const sums = [];
+  for (let m = 0; m < 12; m++) sums.push(monthExpenses(mkey(vy, m)).reduce((a,e) => a + e.amount, 0));
   const max = Math.max(1, ...sums), total = sums.reduce((a,b) => a + b, 0);
   const active = sums.filter(s => s > 0).length;
   $('#yearTitle').textContent = `${vy} год`;
   $('#year').innerHTML = `
-    <div class="year-bars">${sums.map((s,m) => `<button data-m="${m}" class="${m === vm ? 'cur':''}" title="${fmt(s, M)}"><div class="b" style="height:${Math.max(3, s / max * 70)}px"></div><small>${MONTHS_SHORT[m]}</small></button>`).join('')}</div>
-    <div class="year-total"><span>Всего за год</span><b class="num">${fmt(total, M)}</b></div>
-    <div class="year-total" style="border:0;margin-top:2px;padding-top:2px"><span>В среднем в месяц</span><b class="num">${active ? fmt(total / active, M) : '—'}</b></div>`;
+    <div class="year-bars">${sums.map((s,m) => `<button data-m="${m}" class="${m === vm ? 'cur':''}" title="${fmt(s)}"><div class="b" style="height:${Math.max(3, s / max * 70)}px"></div><small>${MONTHS_SHORT[m]}</small></button>`).join('')}</div>
+    <div class="year-total"><span>Всего за год</span><b class="num">${fmt(total)}</b></div>
+    <div class="year-total" style="border:0;margin-top:2px;padding-top:2px"><span>В среднем в месяц</span><b class="num">${active ? fmt(total / active) : '—'}</b></div>`;
 }
 
 /* sheet */
@@ -402,34 +432,55 @@ $('#overlay').onclick = closeSheet;
 
 function toast(msg){ const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('on'), 1800); }
 
+const segHTML = (id, cur) => `<div class="seg" id="${id}"><button type="button" data-cur="PLN" class="${cur==='PLN'?'on':''}">zł</button><button type="button" data-cur="EUR" class="${cur==='EUR'?'on':''}">€</button></div>`;
+function bindSeg(id, onChange){
+  $('#' + id).onclick = e => {
+    const b = e.target.closest('[data-cur]'); if (!b) return;
+    document.querySelectorAll(`#${id} button`).forEach(x => x.classList.toggle('on', x === b));
+    onChange(b.dataset.cur);
+  };
+}
+
 /* expense form */
 function openExpense(opts = {}){
-  const edit = opts.id ? state.expenses.find(e => e.id === opts.id) : null;
-  let cat = edit ? edit.cat : (state.categories.find(c => c.id === openExpense.lastCat) ? openExpense.lastCat : state.categories[0]?.id);
-  const date = edit ? edit.date : (opts.date || (selected && selected.startsWith(mkey(vy,vm)) ? selected : todayStr));
   if (!state.categories.length) { toast('Сначала добавь категорию в настройках'); return; }
+  const edit = opts.id ? state.expenses.find(e => e.id === opts.id) : null;
+  let cat = edit ? edit.cat : (state.categories.find(c => c.id === openExpense.lastCat) ? openExpense.lastCat : state.categories[0].id);
+  let cur = edit ? (edit.orig?.cur || 'PLN') : (openExpense.lastCur || state.display);
+  const startAmt = edit ? (edit.orig ? edit.orig.amount : edit.amount) : '';
+  const date = edit ? edit.date : (opts.date || (selected && selected.startsWith(mkey(vy,vm)) ? selected : todayStr));
   openSheet(`
     <h3>${edit ? 'Изменить трату' : 'Новая трата'}</h3>
-    <div class="field amount-wrap"><input class="inp" id="fAmt" inputmode="decimal" placeholder="0" value="${edit ? String(edit.amount).replace('.',',') : ''}" autocomplete="off"><span class="cur" id="fCur"></span></div>
+    <div class="field amount-wrap with-seg"><input class="inp" id="fAmt" inputmode="decimal" placeholder="0" value="${startAmt === '' ? '' : inputVal(startAmt)}" autocomplete="off">${segHTML('fCur', cur)}</div>
+    <div class="hint num" id="fHint"></div>
     <div class="err" id="fErr"></div>
     <div class="field"><label>Категория</label><div class="chips" id="fCats">${state.categories.map(c => `<button class="chip" data-c="${c.id}"><span class="dot" style="background:${catColor(c.id)}"></span>${esc(c.name)}</button>`).join('')}</div></div>
     <div class="field"><label>На что</label><input class="inp" id="fNote" placeholder="напр. маникюр, Biedronka, проездной" value="${esc(edit?.note || '')}" maxlength="80"></div>
     <div class="field"><label>Дата</label><input class="inp" type="date" id="fDate" value="${date}"></div>
     <div class="btns">${edit ? '<button class="btn ghost danger" id="fDel">Удалить</button>' : '<button class="btn ghost" id="fCancel">Отмена</button>'}<button class="btn primary" id="fSave">Сохранить</button></div>
   `, () => {
-    const setCat = id => { cat = id; document.querySelectorAll('#fCats .chip').forEach(b => b.classList.toggle('on', b.dataset.c === id)); $('#fCur').textContent = CURR[catById(id).currency]; };
-    setCat(cat);
+    const hint = () => {
+      const a = parseNum($('#fAmt').value);
+      $('#fHint').textContent = a > 0 ? (cur === 'EUR' ? `≈ ${fmtCur(a * rate(), 'PLN')} по курсу ${numStr(rate())}` : `≈ ${fmtCur(a / rate(), 'EUR')}`) : '';
+    };
+    const setCat = id => { cat = id; document.querySelectorAll('#fCats .chip').forEach(b => b.classList.toggle('on', b.dataset.c === id)); };
+    setCat(cat); hint();
+    bindSeg('fCur', c => { cur = c; hint(); });
+    $('#fAmt').oninput = hint;
     $('#fCats').onclick = e => { const b = e.target.closest('.chip'); if (b) setCat(b.dataset.c); };
     if (!edit) setTimeout(() => $('#fAmt').focus(), 280);
     $('#fCancel') && ($('#fCancel').onclick = closeSheet);
-    $('#fDel') && ($('#fDel').onclick = () => { delExpense(edit.id); });
+    $('#fDel') && ($('#fDel').onclick = () => delExpense(edit.id));
     $('#fSave').onclick = () => {
       const amt = parseNum($('#fAmt').value), d = $('#fDate').value;
       if (!(amt > 0)) { $('#fErr').textContent = 'Введи сумму больше нуля'; return; }
       if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { $('#fErr').textContent = 'Выбери дату'; return; }
-      const rec = {date:d, cat, amount: round2(amt), note: $('#fNote').value.trim()};
+      // при редактировании без смены суммы/валюты сохраняем исходный пересчёт
+      const same = edit && edit.orig && edit.orig.cur === cur && edit.orig.amount === round2(amt);
+      const rec = {date:d, cat, note: $('#fNote').value.trim(),
+        amount: same ? edit.amount : round2(fromCur(amt, cur)), orig:{amount: round2(amt), cur}};
       if (edit) Object.assign(edit, rec); else state.expenses.push({id: uid(), ...rec});
-      openExpense.lastCat = cat;
+      openExpense.lastCat = cat; openExpense.lastCur = cur;
       save(); closeSheet();
       const dt = new Date(d + 'T12:00:00'); vy = dt.getFullYear(); vm = dt.getMonth(); selected = d;
       render(); toast(edit ? 'Изменено' : 'Добавлено');
@@ -442,78 +493,126 @@ function delExpense(id){
   save(); closeSheet(); render(); toast('Удалено');
 }
 
-/* limits */
+/* limits for the viewed month */
 function openLimits(){
   const key = mkey(vy, vm), lim = limitsFor(key);
+  let cur = state.display;
+  const rows = () => state.categories.map(c => `<div class="lim-row"><div class="n"><span class="dot" style="background:${catColor(c.id)}"></span>${esc(c.name)}</div><div class="amount-wrap"><input class="inp num" inputmode="decimal" data-lim="${c.id}" value="${inputVal(toCur(lim[c.id] || 0, cur))}"><span class="cur">${SYM[cur]}</span></div></div>`).join('');
   openSheet(`
     <h3>Лимиты · ${MONTHS[vm]} ${vy}</h3>
-    ${state.categories.map(c => `<div class="lim-row"><div class="n"><span class="dot" style="background:${catColor(c.id)}"></span>${esc(c.name)}</div><div class="amount-wrap"><input class="inp num" inputmode="decimal" data-lim="${c.id}" value="${String(lim[c.id]).replace('.',',')}"><span class="cur">${CURR[c.currency]}</span></div></div>`).join('')}
-    <label class="check"><input type="checkbox" id="lDef"> <span>Сделать лимитами по умолчанию для следующих месяцев</span></label>
+    <div class="field">${segHTML('lCur', cur)}</div>
+    <div id="lRows">${rows()}</div>
+    <label class="check"><input type="checkbox" id="lDef"> <span>Использовать эти лимиты и для следующих месяцев</span></label>
     <div class="err" id="lErr"></div>
     <div class="btns"><button class="btn ghost" id="lCancel">Отмена</button><button class="btn primary" id="lSave">Сохранить</button></div>
   `, () => {
+    // при переключении валюты пересчитываем введённые числа
+    bindSeg('lCur', c => {
+      document.querySelectorAll('[data-lim]').forEach(inp => { const v = parseNum(inp.value); if (v >= 0) lim[inp.dataset.lim] = fromCur(v, cur); });
+      cur = c; $('#lRows').innerHTML = rows();
+    });
     $('#lCancel').onclick = closeSheet;
     $('#lSave').onclick = () => {
       const out = {};
       for (const inp of document.querySelectorAll('[data-lim]')) {
         const v = parseNum(inp.value);
         if (!(v >= 0)) { $('#lErr').textContent = 'Проверь суммы'; return; }
-        out[inp.dataset.lim] = round2(v);
+        out[inp.dataset.lim] = round2(fromCur(v, cur));
       }
       state.months[key] = {limits: out};
-      if ($('#lDef').checked) state.categories.forEach(c => { if (c.id in out) c.defLimit = out[c.id]; });
+      if ($('#lDef').checked) {
+        state.categories.forEach(c => { if (c.id in out) c.defLimit = out[c.id]; });
+        Object.keys(state.months).forEach(k => { if (k > key) delete state.months[k]; });
+      }
       save(); closeSheet(); render(); toast('Лимиты обновлены');
     };
   });
 }
 
+/* rate from NBP */
+async function fetchRate(silent){
+  try {
+    const r = await fetch('https://api.nbp.pl/api/exchangerates/rates/a/eur/?format=json', {cache:'no-store'});
+    const j = await r.json();
+    const mid = j?.rates?.[0]?.mid;
+    if (!(mid > 0)) throw 0;
+    state.rate = mid;
+    state.rateDate = todayStr; save(); render();
+    if (!silent) toast(`Курс НБП: 1 € = ${numStr(state.rate)} zł`);
+    return state.rate;
+  } catch(e) { if (!silent) toast('Не удалось получить курс'); return null; }
+}
+
 /* settings */
 function openSettings(){
+  let cur = state.display;
   const catRow = c => `<div class="set-cat" data-id="${c.id}">
       <input class="inp" data-f="name" value="${esc(c.name)}" placeholder="Название">
-      <select class="inp" data-f="currency"><option value="EUR" ${c.currency==='EUR'?'selected':''}>EUR</option><option value="PLN" ${c.currency==='PLN'?'selected':''}>PLN</option></select>
-      <input class="inp num" data-f="defLimit" inputmode="decimal" value="${String(c.defLimit).replace('.',',')}" placeholder="Лимит">
+      <div class="amount-wrap"><input class="inp num" data-f="defLimit" inputmode="decimal" value="${inputVal(toCur(c.defLimit, cur))}" placeholder="0" style="height:42px;font-size:14px;padding-right:34px"><span class="cur" style="font-size:13px;right:10px">${SYM[cur]}</span></div>
       <button class="icon-btn" data-rm="${c.id}" aria-label="Удалить категорию" style="width:34px;height:34px">${ICON_DEL}</button>
     </div>`;
   openSheet(`
     <h3>Настройки</h3>
-    <div class="field"><label>Категории · валюта · лимит по умолчанию</label><div id="sCats">${state.categories.map(catRow).join('')}</div>
-    <button class="link-btn" id="sAdd">+ добавить категорию</button></div>
+    <div class="field"><label>Категории и месячный лимит</label><div id="sCats">${state.categories.map(catRow).join('')}</div>
+    <button class="link-btn" id="sAdd">+ добавить категорию</button>
+    <p class="small-note">Новые лимиты применятся к текущему и следующим месяцам. Прошедшие месяцы не меняются.</p></div>
     <div class="two">
-      <div class="field"><label>Курс: 1 € = … zł</label><input class="inp num" id="sRate" inputmode="decimal" value="${String(state.rate).replace('.',',')}"></div>
-      <div class="field"><label>Валюта сводки</label><select class="inp" id="sMain"><option value="EUR" ${state.main==='EUR'?'selected':''}>Евро €</option><option value="PLN" ${state.main==='PLN'?'selected':''}>Злотые zł</option></select></div>
+      <div class="field"><label>Курс: 1 € = … zł</label><input class="inp num" id="sRate" inputmode="decimal" value="${inputVal(rate())}"></div>
+      <div class="field"><label>Показывать суммы в</label>${segHTML('sMain', state.display)}</div>
     </div>
-    <p class="small-note">Курс нужен только для общей суммы и календаря — в категориях всё считается в своей валюте.</p>
+    <label class="check"><input type="checkbox" id="sAuto" ${state.rateAuto ? 'checked':''}> <span>Обновлять курс автоматически (НБП, раз в день)</span></label>
+    <button class="link-btn" id="sFetch">Обновить курс сейчас</button>
     <div class="err" id="sErr"></div>
     <div class="btns"><button class="btn ghost" id="sCancel">Отмена</button><button class="btn primary" id="sSave">Сохранить</button></div>
     <div class="hr"></div>
     <div class="field"><label>Резервная копия</label>
       <div class="btns" style="margin-top:0"><button class="btn ghost" id="sExport">Скачать копию</button><button class="btn ghost" id="sImport">Загрузить копию</button></div>
-      <p class="small-note">Данные хранятся в этом браузере. Иногда скачивай копию, чтобы ничего не потерять, — и чтобы перенести на другое устройство.</p>
+      <p class="small-note">Данные хранятся в этом браузере. Иногда скачивай копию, чтобы ничего не потерять и перенести на другое устройство.</p>
     </div>
     <button class="link-btn" id="sReset" style="color:var(--over)">Стереть все данные</button>
   `, () => {
     const box = $('#sCats');
-    $('#sAdd').onclick = () => { box.insertAdjacentHTML('beforeend', catRow({id: 'c' + uid(), name:'', currency:'EUR', defLimit:0})); box.lastElementChild.querySelector('input').focus(); };
+    let newDisplay = state.display;
+    // переключение валюты в настройках пересчитывает поля лимитов
+    bindSeg('sMain', c => {
+      const r = parseNum($('#sRate').value) > 0 ? parseNum($('#sRate').value) : rate();
+      box.querySelectorAll('[data-f=defLimit]').forEach(inp => {
+        const v = parseNum(inp.value); if (!(v >= 0)) return;
+        const pln = cur === 'EUR' ? v * r : v;
+        inp.value = inputVal(c === 'EUR' ? pln / r : pln);
+        inp.nextElementSibling.textContent = SYM[c];
+      });
+      cur = c; newDisplay = c;
+    });
+    $('#sAdd').onclick = () => { box.insertAdjacentHTML('beforeend', catRow({id: 'c' + uid(), name:'', defLimit:0})); box.lastElementChild.querySelector('input').focus(); };
     box.onclick = e => {
       const b = e.target.closest('[data-rm]'); if (!b) return;
       const used = state.expenses.some(x => x.cat === b.dataset.rm);
       if (used && !confirm('В этой категории есть траты. Удалить категорию? Траты останутся в истории как «Удалённая категория».')) return;
       b.closest('.set-cat').remove();
     };
+    $('#sFetch').onclick = async () => { const r = await fetchRate(false); if (r) $('#sRate').value = inputVal(r); };
     $('#sCancel').onclick = closeSheet;
     $('#sSave').onclick = () => {
+      const r = parseNum($('#sRate').value);
+      if (!(r > 0)) { $('#sErr').textContent = 'Курс должен быть больше нуля'; return; }
       const cats = [];
       for (const row of box.querySelectorAll('.set-cat')) {
         const name = row.querySelector('[data-f=name]').value.trim();
-        const lim = parseNum(row.querySelector('[data-f=defLimit]').value);
+        const v = parseNum(row.querySelector('[data-f=defLimit]').value);
         if (!name) { $('#sErr').textContent = 'У категории должно быть название'; return; }
-        if (!(lim >= 0)) { $('#sErr').textContent = 'Проверь лимиты'; return; }
-        cats.push({id: row.dataset.id, name, currency: row.querySelector('[data-f=currency]').value, defLimit: round2(lim)});
+        if (!(v >= 0)) { $('#sErr').textContent = 'Проверь лимиты'; return; }
+        cats.push({id: row.dataset.id, name, defLimit: round2(cur === 'EUR' ? v * r : v)});
       }
-      const rate = parseNum($('#sRate').value);
-      if (!(rate > 0)) { $('#sErr').textContent = 'Курс должен быть больше нуля'; return; }
-      state.categories = cats; state.rate = rate; state.main = $('#sMain').value;
+      // лимиты, которые изменились, переносим в текущий и будущие месяцы
+      const old = {}; state.categories.forEach(c => old[c.id] = c.defLimit);
+      Object.keys(state.months).forEach(k => {
+        if (k < curKey) return;
+        const l = state.months[k].limits;
+        cats.forEach(c => { if (old[c.id] === undefined || Math.abs(old[c.id] - c.defLimit) > 0.009) l[c.id] = c.defLimit; });
+      });
+      state.categories = cats; state.rate = r; state.display = newDisplay;
+      state.rateAuto = $('#sAuto').checked;
       save(); closeSheet(); render(); toast('Сохранено');
     };
     $('#sExport').onclick = () => {
@@ -535,7 +634,7 @@ $('#importFile').onchange = e => {
     try {
       const d = JSON.parse(r.result);
       if (!Array.isArray(d.categories) || !Array.isArray(d.expenses)) throw 0;
-      state = Object.assign(defaults(), d); save(); closeSheet(); render(); toast('Копия загружена');
+      state = migrate(d); save(); closeSheet(); render(); toast('Копия загружена');
     } catch(err) { toast('Файл не подходит'); }
     e.target.value = '';
   };
@@ -549,6 +648,7 @@ $('#goToday').onclick = () => { vy = today.getFullYear(); vm = today.getMonth();
 $('#editLimits').onclick = openLimits;
 $('#openSettings').onclick = openSettings;
 $('#fab').onclick = () => openExpense();
+$('#hero').onclick = e => { const b = e.target.closest('[data-cur]'); if (!b || b.dataset.cur === state.display) return; state.display = b.dataset.cur; save(); render(); };
 $('#calGrid').onclick = e => { const b = e.target.closest('[data-d]'); if (!b) return; selected = selected === b.dataset.d ? null : b.dataset.d; renderCal(mkey(vy,vm)); renderDay(); };
 $('#dayPanel').onclick = e => {
   const a = e.target.closest('[data-add]'), ed = e.target.closest('[data-edit]'), dl = e.target.closest('[data-del]');
@@ -560,6 +660,7 @@ $('#year').onclick = e => { const b = e.target.closest('[data-m]'); if (!b) retu
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
 
 render();
+if (state.rateAuto && state.rateDate !== todayStr) fetchRate(true);
 })();
 </script>
 </body>
